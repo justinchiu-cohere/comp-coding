@@ -1,9 +1,9 @@
-from typing import List, Optional, Dict, Tuple, Any, Union
-from pydantic import BaseModel, HttpUrl
+from typing import List, Optional, Dict, Tuple, Any
+from pydantic import BaseModel
 from tqdm import tqdm
 import json
 from pathlib import Path
-from datasets import load_dataset, Dataset, DatasetDict
+from datasets import load_dataset
 from multiprocessing import Pool, cpu_count
 import itertools
 
@@ -18,7 +18,7 @@ class ScenarioConfig(BaseModel):
     tests: List[TestCase]
     test_type: str = "stdinout"
     reward_type: str = "binary"
-    execution_server_url: HttpUrl = "http://codeserver-service.default:80"
+    execution_server_url: str = "http://codeserver-service.default:80"
 
 
 class Sample(BaseModel):
@@ -53,7 +53,7 @@ class Problem(BaseModel):
 
 # Load datasets globally for multiprocessing
 print("Loading HuggingFace datasets...")
-hf_datasets: Dict[str, Union[Dataset, DatasetDict]] = {
+hf_datasets: Dict[str, Any] = {
     "taco": load_dataset("BAAI/TACO"),
     "apps": load_dataset("codeparrot/apps"),
     "code_contests": load_dataset("deepmind/code_contests"),
@@ -246,7 +246,7 @@ def build_question_id_to_problem_mapping(
     """
 
     if n_workers is None:
-        n_workers = min(cpu_count(), 64)  # Cap at 64 for safety
+        n_workers = min(cpu_count(), 128)  # Use all available CPUs
 
     # Check if cache exists
     if problems_path.exists() and mapping_path.exists():
@@ -273,44 +273,64 @@ def build_question_id_to_problem_mapping(
 
     ocr2_dataset = load_dataset("nvidia/OpenCodeReasoning-2")
 
-    # Collect items to process
-    items_to_process = []
-    for lang in ["python", "cpp"]:
+    # Process items using streaming with batches
+    print("Processing OCR2 items in batches...")
+
+    batch_size = 10000
+    total_processed = 0
+
+    for lang in ["python"]:
         ocr2_ds = ocr2_dataset[lang]  # type: ignore
 
+        # Create an iterator with limit if needed
         if num_examples is not None:
-            # Take first num_examples items across both languages
-            remaining = max(0, num_examples - len(items_to_process))
-            if remaining > 0:
-                lang_items = list(itertools.islice(ocr2_ds, remaining))
-                items_to_process.extend(lang_items)
+            remaining = num_examples - total_processed
+            if remaining <= 0:
+                break
+            item_iterator = itertools.islice(ocr2_ds, remaining)
+            estimated_total = min(remaining, len(ocr2_ds))
         else:
-            # Process all items
-            items_to_process.extend(ocr2_ds)
+            item_iterator = iter(ocr2_ds)
+            estimated_total = len(ocr2_ds)
 
-    # Process items in parallel
-    print(f"Processing {len(items_to_process)} OCR2 items in parallel...")
-    with Pool(n_workers) as pool:
-        results = list(
-            tqdm(
-                pool.imap_unordered(
-                    process_ocr2_item_for_mapping, items_to_process, chunksize=100
-                ),
-                total=len(items_to_process),
-                desc="Scanning for unique problems",
-            )
-        )
+        print(f"Processing {lang} split (~{estimated_total} items)...")
 
-    # Aggregate results
-    for result in results:
-        if result is not None:
-            question_id, problem_key = result
-            question_id_to_problem_key[question_id] = problem_key
+        # Process in batches to avoid memory issues
+        with Pool(n_workers) as pool:
+            with tqdm(
+                total=estimated_total, desc=f"Scanning {lang} for unique problems"
+            ) as pbar:
+                while True:
+                    # Get next batch
+                    batch = list(itertools.islice(item_iterator, batch_size))
+                    if not batch:
+                        break
 
-            if problem_key not in problem_key_to_question_ids:
-                problem_key_to_question_ids[problem_key] = []
-            if question_id not in problem_key_to_question_ids[problem_key]:
-                problem_key_to_question_ids[problem_key].append(question_id)
+                    # Process batch in parallel
+                    batch_results = pool.map(process_ocr2_item_for_mapping, batch)  # type: ignore
+
+                    # Aggregate batch results
+                    for result in batch_results:
+                        if result is not None:
+                            question_id, problem_key = result
+                            question_id_to_problem_key[question_id] = problem_key
+
+                            if problem_key not in problem_key_to_question_ids:
+                                problem_key_to_question_ids[problem_key] = []
+                            if (
+                                question_id
+                                not in problem_key_to_question_ids[problem_key]
+                            ):
+                                problem_key_to_question_ids[problem_key].append(
+                                    question_id
+                                )
+
+                    # Update progress
+                    pbar.update(len(batch))
+                    total_processed += len(batch)
+
+                    if num_examples and total_processed >= num_examples:
+                        break
 
     # Create Problem instances
     print(f"\nCreating {len(problem_key_to_question_ids)} unique problems...")
@@ -383,56 +403,68 @@ def append_samples_to_problems(
     """
 
     if n_workers is None:
-        n_workers = min(cpu_count(), 64)  # Cap at 64 for safety
+        n_workers = min(cpu_count(), 128)  # Use all available CPUs
 
     print(f"\nAppending samples to problems using {n_workers} workers...")
     ocr2_dataset = load_dataset("nvidia/OpenCodeReasoning-2")
 
-    # Collect items to process
-    items_to_process = []
-    for lang in ["python", "cpp"]:
-        ocr2_ds = ocr2_dataset[lang]  # type: ignore
+    # Process samples using streaming with batches
+    print("Processing OCR2 samples in batches...")
 
-        if num_examples is not None:
-            # Take first num_examples items across both languages
-            remaining = max(0, num_examples - len(items_to_process))
-            if remaining > 0:
-                lang_items = list(itertools.islice(ocr2_ds, remaining))
-                items_to_process.extend(lang_items)
-        else:
-            # Process all items
-            items_to_process.extend(ocr2_ds)
-
-    # Process items in parallel to create samples
-    print(f"Processing {len(items_to_process)} OCR2 items to create samples...")
-    with Pool(n_workers) as pool:
-        results = list(
-            tqdm(
-                pool.imap_unordered(
-                    process_ocr2_item_to_sample, items_to_process, chunksize=100
-                ),
-                total=len(items_to_process),
-                desc="Creating samples",
-            )
-        )
-
-    # Group samples by problem index (thread-safe aggregation)
+    batch_size = 10000
+    total_processed = 0
     samples_by_index: Dict[int, List[Sample]] = {}
     samples_added = 0
     samples_skipped = 0
 
-    for result in results:
-        if result is not None:
-            question_id, sample = result
+    for lang in ["python"]:
+        ocr2_ds = ocr2_dataset[lang]  # type: ignore
 
-            if question_id in question_id_to_index:
-                problem_index = question_id_to_index[question_id]
-                if problem_index not in samples_by_index:
-                    samples_by_index[problem_index] = []
-                samples_by_index[problem_index].append(sample)
-                samples_added += 1
-            else:
-                samples_skipped += 1
+        # Create an iterator with limit if needed
+        if num_examples is not None:
+            remaining = num_examples - total_processed
+            if remaining <= 0:
+                break
+            item_iterator = itertools.islice(ocr2_ds, remaining)
+            estimated_total = min(remaining, len(ocr2_ds))
+        else:
+            item_iterator = iter(ocr2_ds)
+            estimated_total = len(ocr2_ds)
+
+        print(f"Processing {lang} samples (~{estimated_total} items)...")
+
+        # Process in batches to avoid memory issues
+        with Pool(n_workers) as pool:
+            with tqdm(total=estimated_total, desc=f"Creating {lang} samples") as pbar:
+                while True:
+                    # Get next batch
+                    batch = list(itertools.islice(item_iterator, batch_size))
+                    if not batch:
+                        break
+
+                    # Process batch in parallel
+                    batch_results = pool.map(process_ocr2_item_to_sample, batch)  # type: ignore
+
+                    # Aggregate batch results
+                    for result in batch_results:
+                        if result is not None:
+                            question_id, sample = result
+
+                            if question_id in question_id_to_index:
+                                problem_index = question_id_to_index[question_id]
+                                if problem_index not in samples_by_index:
+                                    samples_by_index[problem_index] = []
+                                samples_by_index[problem_index].append(sample)
+                                samples_added += 1
+                            else:
+                                samples_skipped += 1
+
+                    # Update progress
+                    pbar.update(len(batch))
+                    total_processed += len(batch)
+
+                    if num_examples and total_processed >= num_examples:
+                        break
 
     # Now safely append all samples to their problems
     for problem_index, samples in samples_by_index.items():
@@ -525,12 +557,124 @@ if __name__ == "__main__":
 
     print(f"\nConverted {len(problems)} unique problems")
 
-    # Count total samples
+    # Comprehensive statistics
     total_samples = sum(len(p.samples) for p in problems)
     print(f"Total samples across all problems: {total_samples}")
 
+    # Dataset distribution
+    print("\n=== Dataset Distribution ===")
+    dataset_counts = {}
+    dataset_sample_counts = {}
+    for p in problems:
+        if p.dataset:
+            dataset_counts[p.dataset] = dataset_counts.get(p.dataset, 0) + 1
+            dataset_sample_counts[p.dataset] = dataset_sample_counts.get(
+                p.dataset, 0
+            ) + len(p.samples)
+
+    for dataset in sorted(dataset_counts.keys()):
+        print(
+            f"{dataset}: {dataset_counts[dataset]} problems, {dataset_sample_counts[dataset]} samples"
+        )
+
+    # Sample distribution statistics
+    print("\n=== Sample Distribution ===")
+    samples_per_problem = [len(p.samples) for p in problems]
+    no_sample_problems = 0
+    if samples_per_problem:
+        print(f"Min samples per problem: {min(samples_per_problem)}")
+        print(f"Max samples per problem: {max(samples_per_problem)}")
+        print(
+            f"Avg samples per problem: {sum(samples_per_problem) / len(samples_per_problem):.2f}"
+        )
+
+        # Problems with no samples
+        no_sample_problems = sum(1 for s in samples_per_problem if s == 0)
+        if no_sample_problems:
+            print(f"Problems with no samples: {no_sample_problems}")
+
+    # Test case statistics
+    print("\n=== Test Case Statistics ===")
+    test_counts = [len(p.scenario_config.tests) for p in problems]
+    no_test_problems = 0
+    if test_counts:
+        print(f"Min tests per problem: {min(test_counts)}")
+        print(f"Max tests per problem: {max(test_counts)}")
+        print(f"Avg tests per problem: {sum(test_counts) / len(test_counts):.2f}")
+
+        no_test_problems = sum(1 for t in test_counts if t == 0)
+        if no_test_problems:
+            print(f"Problems with no tests: {no_test_problems}")
+
+    # Question ID coverage
+    print("\n=== Question ID Coverage ===")
+    total_question_ids = sum(len(p.question_ids) for p in problems)
+    print(f"Total question IDs mapped: {total_question_ids}")
+    avg_qids = 0.0
     if problems:
-        print("\nFirst problem example:")
+        avg_qids = total_question_ids / len(problems)
+        print(f"Avg question IDs per problem: {avg_qids:.2f}")
+
+    # Sample quality statistics
+    print("\n=== Sample Quality ===")
+    r1_count = sum(1 for p in problems for s in p.samples if s.r1_generation)
+    qwq_count = sum(1 for p in problems for s in p.samples if s.qwq_critique)
+    solution_count = sum(1 for p in problems for s in p.samples if s.solution)
+    judgement_count = sum(1 for p in problems for s in p.samples if s.judgement)
+
+    if total_samples > 0:
+        print(
+            f"Samples with R1 generation: {r1_count} ({100 * r1_count / total_samples:.1f}%)"
+        )
+        print(
+            f"Samples with QWQ critique: {qwq_count} ({100 * qwq_count / total_samples:.1f}%)"
+        )
+        print(
+            f"Samples with solution: {solution_count} ({100 * solution_count / total_samples:.1f}%)"
+        )
+        print(
+            f"Samples with judgement: {judgement_count} ({100 * judgement_count / total_samples:.1f}%)"
+        )
+
+    # Save statistics to file
+    stats_path = problems_path.parent / f"{problems_path.stem}_stats.json"
+    stats = {
+        "total_problems": len(problems),
+        "total_samples": total_samples,
+        "dataset_distribution": dataset_counts,
+        "dataset_sample_distribution": dataset_sample_counts,
+        "sample_distribution": {
+            "min": min(samples_per_problem) if samples_per_problem else 0,
+            "max": max(samples_per_problem) if samples_per_problem else 0,
+            "avg": sum(samples_per_problem) / len(samples_per_problem)
+            if samples_per_problem
+            else 0,
+            "no_samples": no_sample_problems,
+        },
+        "test_distribution": {
+            "min": min(test_counts) if test_counts else 0,
+            "max": max(test_counts) if test_counts else 0,
+            "avg": sum(test_counts) / len(test_counts) if test_counts else 0,
+            "no_tests": no_test_problems,
+        },
+        "question_id_coverage": {
+            "total": total_question_ids,
+            "avg_per_problem": avg_qids,
+        },
+        "sample_quality": {
+            "r1_generation": r1_count,
+            "qwq_critique": qwq_count,
+            "solution": solution_count,
+            "judgement": judgement_count,
+        },
+    }
+
+    with open(stats_path, "w") as f:
+        json.dump(stats, f, indent=2)
+    print(f"\nStatistics saved to: {stats_path}")
+
+    if problems:
+        print("\n=== First Problem Example ===")
         print(f"Dataset: {problems[0].dataset}")
         print(
             f"Question IDs: {problems[0].question_ids[:3]}..."
