@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Step 4: Partition filtered problems into 4 sets.
+Step 3: Partition filtered problems into 4 sets.
 Creates 4 balanced partitions of problems for parallel processing or evaluation.
 """
 
@@ -95,7 +95,7 @@ def report_partition_statistics(partitions: List[List[Problem]]) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Step 4: Partition filtered problems into 4 sets"
+        description="Step 3: Partition filtered problems into 4 sets"
     )
     parser.add_argument(
         "--input-file",
@@ -158,7 +158,7 @@ def main():
         prefix = (
             "problems" if not args.num_examples else f"problems_{args.num_examples}"
         )
-        input_path = input_dir / f"{prefix}_step3_filtered.json"
+        input_path = input_dir / f"{prefix}_step2_filtered.json"
 
     if args.output_prefix:
         output_prefix = args.output_prefix
@@ -166,7 +166,7 @@ def main():
         prefix = (
             "problems" if not args.num_examples else f"problems_{args.num_examples}"
         )
-        output_prefix = f"{prefix}_step4_partition"
+        output_prefix = f"{prefix}_step3_partition"
 
     # Check if any output files already exist
     existing_files = []
@@ -182,7 +182,7 @@ def main():
         print("Use --force-recreate to overwrite.")
         return
 
-    print(f"Step 4: Partitioning problems into {args.num_partitions} sets")
+    print(f"Step 3: Partitioning problems into {args.num_partitions} sets")
     print(f"Loading problems from {input_path}")
 
     # Load filtered problems
