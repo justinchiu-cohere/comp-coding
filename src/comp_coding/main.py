@@ -234,6 +234,7 @@ def build_question_id_to_problem_mapping(
     mapping_path: Path = Path("question_id_to_index.json"),
     num_examples: Optional[int] = None,
     n_workers: Optional[int] = None,
+    force_recreate: bool = False,
 ) -> Tuple[Dict[str, int], List[Problem]]:
     """
     Build mapping from question_id to problem index.
@@ -252,8 +253,8 @@ def build_question_id_to_problem_mapping(
     if n_workers is None:
         n_workers = min(cpu_count(), 128)  # Use all available CPUs
 
-    # Check if cache exists
-    if problems_path.exists() and mapping_path.exists():
+    # Check if cache exists and not forcing recreation
+    if not force_recreate and problems_path.exists() and mapping_path.exists():
         print(f"Loading cached data from {problems_path} and {mapping_path}")
 
         # Load problems
@@ -479,6 +480,54 @@ def append_samples_to_problems(
     )
 
 
+def limit_samples_per_problem(problems: List[Problem], max_samples: int = 8) -> None:
+    """
+    Limit the number of samples per problem to max_samples.
+    Prioritize by pass_rate (highest first), then by length (shortest first).
+
+    Args:
+        problems: List of Problem instances to limit samples for
+        max_samples: Maximum number of samples per problem (default 8)
+    """
+    print(f"\nLimiting samples to {max_samples} per problem...")
+
+    total_before = sum(len(p.samples) for p in problems)
+    problems_limited = 0
+
+    for problem in problems:
+        if len(problem.samples) > max_samples:
+            problems_limited += 1
+
+            # Sort samples by pass_rate (descending) and then by length (ascending)
+            # Calculate length as total characters in all string fields
+            def sample_sort_key(sample: Sample) -> Tuple[float, int]:
+                # Default pass_rate to 0 if None
+                pass_rate = sample.pass_rate if sample.pass_rate is not None else 0.0
+                # Calculate total length of all string fields
+                length = 0
+                if sample.r1_generation:
+                    length += len(sample.r1_generation)
+                if sample.qwq_critique:
+                    length += len(sample.qwq_critique)
+                if sample.solution:
+                    length += len(sample.solution)
+                if sample.judgement:
+                    length += len(sample.judgement)
+                # Return negative pass_rate for descending sort, positive length for ascending
+                return (-pass_rate, length)
+
+            # Sort and keep only top max_samples
+            problem.samples.sort(key=sample_sort_key)
+            problem.samples = problem.samples[:max_samples]
+
+    total_after = sum(len(p.samples) for p in problems)
+
+    print(
+        f"Limited {problems_limited} problems from {total_before} to {total_after} total samples"
+    )
+    print(f"Removed {total_before - total_after} samples")
+
+
 def report_statistics(problems: List[Problem], problems_path: Path) -> None:
     """Report comprehensive statistics about the converted problems."""
     # Comprehensive statistics
@@ -598,11 +647,45 @@ def report_statistics(problems: List[Problem], problems_path: Path) -> None:
     print(f"\nStatistics saved to: {stats_path}")
 
 
+def load_cached_problems(
+    problems_path: Path,
+    mapping_path: Path,
+) -> Tuple[Optional[Dict[str, int]], Optional[List[Problem]]]:
+    """
+    Load cached problems and mapping if they exist.
+
+    Args:
+        problems_path: Path to problems JSON file
+        mapping_path: Path to mapping JSON file
+
+    Returns:
+        Tuple of (question_id_to_index, problems) or (None, None) if cache doesn't exist
+    """
+    if not problems_path.exists() or not mapping_path.exists():
+        return None, None
+
+    print(f"Loading cached problems from {problems_path}")
+    try:
+        with open(problems_path, "r") as f:
+            problems_data = json.load(f)
+            problems = [Problem.model_validate(p) for p in problems_data]
+
+        with open(mapping_path, "r") as f:
+            question_id_to_index = json.load(f)
+
+        print(f"Loaded {len(problems)} cached problems")
+        return question_id_to_index, problems
+    except Exception as e:
+        print(f"Error loading cache: {e}")
+        return None, None
+
+
 def convert_ocr2_to_problems(
     problems_path: Path = Path("problems.json"),
     mapping_path: Path = Path("question_id_to_index.json"),
     num_examples: Optional[int] = None,
     n_workers: Optional[int] = None,
+    force_recreate: bool = False,
 ) -> List[Problem]:
     """
     Convert OpenCodeReasoning2 dataset items to Problem instances.
@@ -612,18 +695,54 @@ def convert_ocr2_to_problems(
         mapping_path: Path to question_id to index mapping file
         num_examples: Optional limit on number of examples to process (for testing)
         n_workers: Number of worker processes (defaults to CPU count)
+        force_recreate: Force recreation even if cache exists
 
     Returns:
         List of Problem instances with samples attached
     """
 
+    # Try to load from cache if not forcing recreation
+    if not force_recreate:
+        question_id_to_index, problems = load_cached_problems(
+            problems_path, mapping_path
+        )
+        if question_id_to_index is not None and problems is not None:
+            # Check if samples need to be populated
+            total_samples = sum(len(p.samples) for p in problems)
+            if total_samples == 0:
+                print("Cached problems found but no samples. Appending samples...")
+                append_samples_to_problems(
+                    question_id_to_index, problems, num_examples, n_workers
+                )
+                # Limit samples to 8 per problem
+                limit_samples_per_problem(problems, max_samples=8)
+                # Save updated problems with samples
+                print(f"Saving updated problems with samples to {problems_path}")
+                with open(problems_path, "w") as f:
+                    problems_data = [prob.model_dump() for prob in problems]
+                    json.dump(problems_data, f, indent=2)
+            else:
+                print(f"Using cached problems with {total_samples} existing samples")
+                # Apply sample limit even to cached problems
+                limit_samples_per_problem(problems, max_samples=8)
+            return problems
+
     # Step 1: Build or load the question_id to index mapping and problems
     question_id_to_index, problems = build_question_id_to_problem_mapping(
-        problems_path, mapping_path, num_examples, n_workers
+        problems_path, mapping_path, num_examples, n_workers, force_recreate
     )
 
     # Step 2: Append all samples to their corresponding problems
     append_samples_to_problems(question_id_to_index, problems, num_examples, n_workers)
+
+    # Step 3: Limit samples to 8 per problem
+    limit_samples_per_problem(problems, max_samples=8)
+
+    # Save the problems with samples
+    print(f"Saving problems with samples to {problems_path}")
+    with open(problems_path, "w") as f:
+        problems_data = [prob.model_dump() for prob in problems]
+        json.dump(problems_data, f, indent=2)
 
     return problems
 
@@ -652,6 +771,11 @@ if __name__ == "__main__":
         default=None,
         help="Number of worker processes (defaults to min(CPU count, 64))",
     )
+    parser.add_argument(
+        "--force-recreate",
+        action="store_true",
+        help="Force recreation of problems even if cache exists",
+    )
 
     args = parser.parse_args()
 
@@ -675,7 +799,11 @@ if __name__ == "__main__":
         print("Processing all examples")
 
     problems = convert_ocr2_to_problems(
-        problems_path, mapping_path, args.num_examples, args.n_workers
+        problems_path,
+        mapping_path,
+        args.num_examples,
+        args.n_workers,
+        args.force_recreate,
     )
 
     print(f"\nConverted {len(problems)} unique problems")
