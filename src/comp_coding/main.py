@@ -6,6 +6,10 @@ from pathlib import Path
 from datasets import load_dataset
 from multiprocessing import Pool, cpu_count
 import itertools
+import sys
+
+# Increase the limit for integer string conversion to handle large numbers in APPS dataset
+sys.set_int_max_str_digits(100000)
 
 
 class TestCase(BaseModel):
@@ -475,88 +479,8 @@ def append_samples_to_problems(
     )
 
 
-def convert_ocr2_to_problems(
-    problems_path: Path = Path("problems.json"),
-    mapping_path: Path = Path("question_id_to_index.json"),
-    num_examples: Optional[int] = None,
-    n_workers: Optional[int] = None,
-) -> List[Problem]:
-    """
-    Convert OpenCodeReasoning2 dataset items to Problem instances.
-
-    Args:
-        problems_path: Path to problems JSON file
-        mapping_path: Path to question_id to index mapping file
-        num_examples: Optional limit on number of examples to process (for testing)
-        n_workers: Number of worker processes (defaults to CPU count)
-
-    Returns:
-        List of Problem instances with samples attached
-    """
-
-    # Step 1: Build or load the question_id to index mapping and problems
-    question_id_to_index, problems = build_question_id_to_problem_mapping(
-        problems_path, mapping_path, num_examples, n_workers
-    )
-
-    # Step 2: Append all samples to their corresponding problems
-    append_samples_to_problems(question_id_to_index, problems, num_examples, n_workers)
-
-    return problems
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Convert OCR2 dataset to Problem instances"
-    )
-    parser.add_argument(
-        "--num-examples",
-        type=int,
-        default=None,
-        help="Limit number of examples to process (for testing)",
-    )
-    parser.add_argument(
-        "--cache-prefix",
-        type=str,
-        default="",
-        help="Prefix for cache file names",
-    )
-    parser.add_argument(
-        "--n-workers",
-        type=int,
-        default=None,
-        help="Number of worker processes (defaults to min(CPU count, 64))",
-    )
-
-    args = parser.parse_args()
-
-    # Construct file paths based on prefix and num_examples
-    if args.cache_prefix:
-        prefix = args.cache_prefix
-    else:
-        prefix = (
-            "problems" if not args.num_examples else f"problems_{args.num_examples}"
-        )
-
-    # Save to data/ directory
-    data_dir = Path("data")
-    data_dir.mkdir(exist_ok=True)
-    problems_path = data_dir / f"{prefix}.json"
-    mapping_path = data_dir / f"{prefix}_mapping.json"
-
-    if args.num_examples:
-        print(f"Processing limited to {args.num_examples} examples")
-    else:
-        print("Processing all examples")
-
-    problems = convert_ocr2_to_problems(
-        problems_path, mapping_path, args.num_examples, args.n_workers
-    )
-
-    print(f"\nConverted {len(problems)} unique problems")
-
+def report_statistics(problems: List[Problem], problems_path: Path) -> None:
+    """Report comprehensive statistics about the converted problems."""
     # Comprehensive statistics
     total_samples = sum(len(p.samples) for p in problems)
     print(f"Total samples across all problems: {total_samples}")
@@ -672,6 +596,92 @@ if __name__ == "__main__":
     with open(stats_path, "w") as f:
         json.dump(stats, f, indent=2)
     print(f"\nStatistics saved to: {stats_path}")
+
+
+def convert_ocr2_to_problems(
+    problems_path: Path = Path("problems.json"),
+    mapping_path: Path = Path("question_id_to_index.json"),
+    num_examples: Optional[int] = None,
+    n_workers: Optional[int] = None,
+) -> List[Problem]:
+    """
+    Convert OpenCodeReasoning2 dataset items to Problem instances.
+
+    Args:
+        problems_path: Path to problems JSON file
+        mapping_path: Path to question_id to index mapping file
+        num_examples: Optional limit on number of examples to process (for testing)
+        n_workers: Number of worker processes (defaults to CPU count)
+
+    Returns:
+        List of Problem instances with samples attached
+    """
+
+    # Step 1: Build or load the question_id to index mapping and problems
+    question_id_to_index, problems = build_question_id_to_problem_mapping(
+        problems_path, mapping_path, num_examples, n_workers
+    )
+
+    # Step 2: Append all samples to their corresponding problems
+    append_samples_to_problems(question_id_to_index, problems, num_examples, n_workers)
+
+    return problems
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Convert OCR2 dataset to Problem instances"
+    )
+    parser.add_argument(
+        "--num-examples",
+        type=int,
+        default=None,
+        help="Limit number of examples to process (for testing)",
+    )
+    parser.add_argument(
+        "--cache-prefix",
+        type=str,
+        default="",
+        help="Prefix for cache file names",
+    )
+    parser.add_argument(
+        "--n-workers",
+        type=int,
+        default=None,
+        help="Number of worker processes (defaults to min(CPU count, 64))",
+    )
+
+    args = parser.parse_args()
+
+    # Construct file paths based on prefix and num_examples
+    if args.cache_prefix:
+        prefix = args.cache_prefix
+    else:
+        prefix = (
+            "problems" if not args.num_examples else f"problems_{args.num_examples}"
+        )
+
+    # Save to data/ directory
+    data_dir = Path("data")
+    data_dir.mkdir(exist_ok=True)
+    problems_path = data_dir / f"{prefix}.json"
+    mapping_path = data_dir / f"{prefix}_mapping.json"
+
+    if args.num_examples:
+        print(f"Processing limited to {args.num_examples} examples")
+    else:
+        print("Processing all examples")
+
+    problems = convert_ocr2_to_problems(
+        problems_path, mapping_path, args.num_examples, args.n_workers
+    )
+
+    print(f"\nConverted {len(problems)} unique problems")
+
+    # Report statistics
+    report_statistics(problems, problems_path)
 
     if problems:
         print("\n=== First Problem Example ===")
