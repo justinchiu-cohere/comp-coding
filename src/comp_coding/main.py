@@ -480,14 +480,14 @@ def append_samples_to_problems(
     )
 
 
-def limit_samples_per_problem(problems: List[Problem], max_samples: int = 8) -> None:
+def limit_samples_per_problem(problems: List[Problem], max_samples: int = 4) -> None:
     """
     Limit the number of samples per problem to max_samples.
     Prioritize by pass_rate (highest first), then by length (shortest first).
 
     Args:
         problems: List of Problem instances to limit samples for
-        max_samples: Maximum number of samples per problem (default 8)
+        max_samples: Maximum number of samples per problem (default 4)
     """
     print(f"\nLimiting samples to {max_samples} per problem...")
 
@@ -714,8 +714,8 @@ def convert_ocr2_to_problems(
                 append_samples_to_problems(
                     question_id_to_index, problems, num_examples, n_workers
                 )
-                # Limit samples to 8 per problem
-                limit_samples_per_problem(problems, max_samples=8)
+                # Limit samples to 4 per problem
+                limit_samples_per_problem(problems, max_samples=4)
                 # Save updated problems with samples
                 print(f"Saving updated problems with samples to {problems_path}")
                 with open(problems_path, "w") as f:
@@ -724,7 +724,7 @@ def convert_ocr2_to_problems(
             else:
                 print(f"Using cached problems with {total_samples} existing samples")
                 # Apply sample limit even to cached problems
-                limit_samples_per_problem(problems, max_samples=8)
+                limit_samples_per_problem(problems, max_samples=4)
             return problems
 
     # Step 1: Build or load the question_id to index mapping and problems
@@ -735,8 +735,8 @@ def convert_ocr2_to_problems(
     # Step 2: Append all samples to their corresponding problems
     append_samples_to_problems(question_id_to_index, problems, num_examples, n_workers)
 
-    # Step 3: Limit samples to 8 per problem
-    limit_samples_per_problem(problems, max_samples=8)
+    # Step 3: Limit samples to 4 per problem
+    limit_samples_per_problem(problems, max_samples=4)
 
     # Save the problems with samples
     print(f"Saving problems with samples to {problems_path}")
