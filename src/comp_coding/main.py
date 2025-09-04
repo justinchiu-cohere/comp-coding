@@ -23,6 +23,7 @@ class ScenarioConfig(BaseModel):
 
 class Sample(BaseModel):
     """Individual sample from OCR2 dataset."""
+
     r1_generation: Optional[str] = None
     qwq_critique: Optional[str] = None
     solution: Optional[str] = None
@@ -37,6 +38,7 @@ class Sample(BaseModel):
 
 class Problem(BaseModel):
     """Problem with test cases and multiple samples."""
+
     env_name: str = "code"
     scenario_config: ScenarioConfig
     # Problem metadata
@@ -59,28 +61,30 @@ hf_datasets: Dict[str, Union[Dataset, DatasetDict]] = {
 }
 
 
-def process_code_contests(benchmark: Dict[str, Any]) -> Tuple[Optional[str], List[TestCase]]:
+def process_code_contests(
+    benchmark: Dict[str, Any],
+) -> Tuple[Optional[str], List[TestCase]]:
     """Process code_contests dataset item."""
     if not benchmark.get("description"):
         return None, []
-    
+
     question = benchmark["description"]
     tests = []
-    
+
     # Extract tests from public_tests and private_tests
     if benchmark.get("public_tests"):
         for inp, out in zip(
             benchmark["public_tests"]["input"], benchmark["public_tests"]["output"]
         ):
             tests.append(TestCase(stdin=inp, stdout=out))
-    
+
     if benchmark.get("private_tests"):
         for inp, out in zip(
             benchmark["private_tests"]["input"],
             benchmark["private_tests"]["output"],
         ):
             tests.append(TestCase(stdin=inp, stdout=out))
-    
+
     return question, tests
 
 
@@ -88,7 +92,7 @@ def process_taco(benchmark: Dict[str, Any]) -> Tuple[Optional[str], List[TestCas
     """Process TACO dataset item."""
     question = benchmark.get("question", "")
     tests = []
-    
+
     if benchmark.get("input_output"):
         try:
             io_data = json.loads(benchmark["input_output"])
@@ -102,7 +106,7 @@ def process_taco(benchmark: Dict[str, Any]) -> Tuple[Optional[str], List[TestCas
                     tests.append(TestCase(stdin=str(inp), stdout=str(out)))
         except (json.JSONDecodeError, TypeError):
             pass
-    
+
     return question, tests
 
 
@@ -110,7 +114,7 @@ def process_apps(benchmark: Dict[str, Any]) -> Tuple[Optional[str], List[TestCas
     """Process APPS dataset item."""
     question = benchmark.get("question", "")
     tests = []
-    
+
     if benchmark.get("input_output"):
         try:
             io_data = json.loads(benchmark["input_output"])
@@ -124,23 +128,25 @@ def process_apps(benchmark: Dict[str, Any]) -> Tuple[Optional[str], List[TestCas
                     tests.append(TestCase(stdin=str(inp), stdout=str(out)))
         except (json.JSONDecodeError, TypeError):
             pass
-    
+
     return question, tests
 
 
-def process_open_r1_codeforces(benchmark: Dict[str, Any]) -> Tuple[Optional[str], List[TestCase]]:
+def process_open_r1_codeforces(
+    benchmark: Dict[str, Any],
+) -> Tuple[Optional[str], List[TestCase]]:
     """Process open-r1/codeforces dataset item."""
     if not benchmark.get("description"):
         return None, []
-    
+
     question = benchmark["description"]
     tests = []
-    
+
     if benchmark.get("input_format"):
         question += "\n\nInput\n\n" + benchmark["input_format"]
     if benchmark.get("output_format"):
         question += "\n\nOutput\n\n" + benchmark["output_format"]
-    
+
     if benchmark.get("examples") and question:
         question += "\n\nExamples"
         for example in benchmark["examples"]:
@@ -150,13 +156,11 @@ def process_open_r1_codeforces(benchmark: Dict[str, Any]) -> Tuple[Optional[str]
                 question += "\n\nOutput\n\n" + example["output"]
             # Also collect as test cases
             if "input" in example and "output" in example:
-                tests.append(
-                    TestCase(stdin=example["input"], stdout=example["output"])
-                )
-    
+                tests.append(TestCase(stdin=example["input"], stdout=example["output"]))
+
     if benchmark.get("note"):
         question += "\n\nNote\n\n" + benchmark["note"]
-    
+
     return question, tests
 
 
@@ -165,7 +169,7 @@ def get_question_and_tests(
 ) -> Tuple[Optional[str], List[TestCase]]:
     """Extract question and test cases from the original dataset."""
     benchmark: Dict[str, Any] = hf_datasets[ds_name][split][int(index)]
-    
+
     # Dispatch to dataset-specific processor
     processors = {
         "code_contests": process_code_contests,
@@ -173,7 +177,7 @@ def get_question_and_tests(
         "apps": process_apps,
         "open-r1/codeforces": process_open_r1_codeforces,
     }
-    
+
     processor = processors.get(ds_name)
     if processor:
         return processor(benchmark)
@@ -181,15 +185,17 @@ def get_question_and_tests(
         raise ValueError(f"Unknown dataset: {ds_name}")
 
 
-def process_ocr2_item_for_mapping(item: Dict[str, Any]) -> Optional[Tuple[str, Tuple[str, str, int]]]:
+def process_ocr2_item_for_mapping(
+    item: Dict[str, Any],
+) -> Optional[Tuple[str, Tuple[str, str, int]]]:
     """Process a single OCR2 item to extract problem key and question_id.
     Returns (question_id, problem_key) or None."""
-    
+
     ds_name: str = item["dataset"]
-    ds_split: str = item["split"] 
+    ds_split: str = item["split"]
     ds_index: int = int(item["index"])
     question_id: str = item.get("question_id", "")
-    
+
     if question_id:
         problem_key = (ds_name, ds_split, ds_index)
         return (question_id, problem_key)
@@ -199,9 +205,9 @@ def process_ocr2_item_for_mapping(item: Dict[str, Any]) -> Optional[Tuple[str, T
 def process_ocr2_item_to_sample(item: Dict[str, Any]) -> Optional[Tuple[str, Sample]]:
     """Process a single OCR2 item to create a Sample.
     Returns (question_id, Sample) or None."""
-    
+
     question_id = item.get("question_id", "")
-    
+
     if question_id:
         sample = Sample(
             r1_generation=item.get("r1_generation"),
@@ -238,25 +244,25 @@ def build_question_id_to_problem_mapping(
     Returns:
         Tuple of (question_id_to_index dict, list of all problems)
     """
-    
+
     if n_workers is None:
         n_workers = min(cpu_count(), 64)  # Cap at 64 for safety
 
     # Check if cache exists
     if problems_path.exists() and mapping_path.exists():
         print(f"Loading cached data from {problems_path} and {mapping_path}")
-        
+
         # Load problems
         with open(problems_path, "r") as f:
             problems_data = json.load(f)
             problems = [Problem(**prob_data) for prob_data in problems_data]
-        
+
         # Load mapping
         with open(mapping_path, "r") as f:
             question_id_to_index = json.load(f)
             # Convert string keys back to int values
             question_id_to_index = {k: int(v) for k, v in question_id_to_index.items()}
-        
+
         return question_id_to_index, problems
 
     print(f"Building question_id to Problem mapping using {n_workers} workers...")
@@ -271,7 +277,7 @@ def build_question_id_to_problem_mapping(
     items_to_process = []
     for lang in ["python", "cpp"]:
         ocr2_ds = ocr2_dataset[lang]  # type: ignore
-        
+
         if num_examples is not None:
             # Take first num_examples items across both languages
             remaining = max(0, num_examples - len(items_to_process))
@@ -281,22 +287,26 @@ def build_question_id_to_problem_mapping(
         else:
             # Process all items
             items_to_process.extend(ocr2_ds)
-    
+
     # Process items in parallel
     print(f"Processing {len(items_to_process)} OCR2 items in parallel...")
     with Pool(n_workers) as pool:
-        results = list(tqdm(
-            pool.imap_unordered(process_ocr2_item_for_mapping, items_to_process, chunksize=100),
-            total=len(items_to_process),
-            desc="Scanning for unique problems"
-        ))
-    
+        results = list(
+            tqdm(
+                pool.imap_unordered(
+                    process_ocr2_item_for_mapping, items_to_process, chunksize=100
+                ),
+                total=len(items_to_process),
+                desc="Scanning for unique problems",
+            )
+        )
+
     # Aggregate results
     for result in results:
         if result is not None:
             question_id, problem_key = result
             question_id_to_problem_key[question_id] = problem_key
-            
+
             if problem_key not in problem_key_to_question_ids:
                 problem_key_to_question_ids[problem_key] = []
             if question_id not in problem_key_to_question_ids[problem_key]:
@@ -346,7 +356,7 @@ def build_question_id_to_problem_mapping(
     with open(problems_path, "w") as f:
         problems_data = [prob.model_dump() for prob in problems]
         json.dump(problems_data, f, indent=2)
-    
+
     # Save mapping to separate file
     print(f"Saving question_id to index mapping to {mapping_path}")
     with open(mapping_path, "w") as f:
@@ -371,7 +381,7 @@ def append_samples_to_problems(
         num_examples: Optional limit on number of examples to process (for testing)
         n_workers: Number of worker processes (defaults to CPU count)
     """
-    
+
     if n_workers is None:
         n_workers = min(cpu_count(), 64)  # Cap at 64 for safety
 
@@ -382,7 +392,7 @@ def append_samples_to_problems(
     items_to_process = []
     for lang in ["python", "cpp"]:
         ocr2_ds = ocr2_dataset[lang]  # type: ignore
-        
+
         if num_examples is not None:
             # Take first num_examples items across both languages
             remaining = max(0, num_examples - len(items_to_process))
@@ -392,25 +402,29 @@ def append_samples_to_problems(
         else:
             # Process all items
             items_to_process.extend(ocr2_ds)
-    
+
     # Process items in parallel to create samples
     print(f"Processing {len(items_to_process)} OCR2 items to create samples...")
     with Pool(n_workers) as pool:
-        results = list(tqdm(
-            pool.imap_unordered(process_ocr2_item_to_sample, items_to_process, chunksize=100),
-            total=len(items_to_process),
-            desc="Creating samples"
-        ))
-    
+        results = list(
+            tqdm(
+                pool.imap_unordered(
+                    process_ocr2_item_to_sample, items_to_process, chunksize=100
+                ),
+                total=len(items_to_process),
+                desc="Creating samples",
+            )
+        )
+
     # Group samples by problem index (thread-safe aggregation)
     samples_by_index: Dict[int, List[Sample]] = {}
     samples_added = 0
     samples_skipped = 0
-    
+
     for result in results:
         if result is not None:
             question_id, sample = result
-            
+
             if question_id in question_id_to_index:
                 problem_index = question_id_to_index[question_id]
                 if problem_index not in samples_by_index:
@@ -419,7 +433,7 @@ def append_samples_to_problems(
                 samples_added += 1
             else:
                 samples_skipped += 1
-    
+
     # Now safely append all samples to their problems
     for problem_index, samples in samples_by_index.items():
         problems[problem_index].samples.extend(samples)
@@ -490,8 +504,10 @@ if __name__ == "__main__":
     if args.cache_prefix:
         prefix = args.cache_prefix
     else:
-        prefix = "problems" if not args.num_examples else f"problems_{args.num_examples}"
-    
+        prefix = (
+            "problems" if not args.num_examples else f"problems_{args.num_examples}"
+        )
+
     # Save to data/ directory
     data_dir = Path("data")
     data_dir.mkdir(exist_ok=True)
@@ -502,9 +518,11 @@ if __name__ == "__main__":
         print(f"Processing limited to {args.num_examples} examples")
     else:
         print("Processing all examples")
-    
-    problems = convert_ocr2_to_problems(problems_path, mapping_path, args.num_examples, args.n_workers)
-    
+
+    problems = convert_ocr2_to_problems(
+        problems_path, mapping_path, args.num_examples, args.n_workers
+    )
+
     print(f"\nConverted {len(problems)} unique problems")
 
     # Count total samples
@@ -512,9 +530,13 @@ if __name__ == "__main__":
     print(f"Total samples across all problems: {total_samples}")
 
     if problems:
-        print(f"\nFirst problem example:")
+        print("\nFirst problem example:")
         print(f"Dataset: {problems[0].dataset}")
-        print(f"Question IDs: {problems[0].question_ids[:3]}..." if len(problems[0].question_ids) > 3 else problems[0].question_ids)
+        print(
+            f"Question IDs: {problems[0].question_ids[:3]}..."
+            if len(problems[0].question_ids) > 3
+            else problems[0].question_ids
+        )
         print(f"Prompt: {problems[0].scenario_config.prompt[:200]}...")
         print(f"Number of tests: {len(problems[0].scenario_config.tests)}")
         print(f"Number of samples: {len(problems[0].samples)}")
