@@ -62,3 +62,11 @@ class RLProblem(BaseModel):
 
     env_name: str = "code"
     scenario_config: ScenarioConfig
+
+
+class RLProblemWithCompletions(BaseModel):
+    """RL training format with sample completions for Luffy configuration."""
+
+    env_name: str = "code"
+    scenario_config: ScenarioConfig
+    completions: List[str]  # List of sample solutions for this problem
