@@ -1,7 +1,7 @@
 """Shared Pydantic models for the comp_coding pipeline."""
 
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TestCase(BaseModel):
@@ -41,7 +41,24 @@ class Problem(BaseModel):
     dataset: Optional[str] = None
     split: Optional[str] = None
     index: Optional[int] = None
-    # All question_ids that map to this problem
-    question_ids: List[str] = []
+    # The unique question_id that maps to this problem
+    question_id: Optional[str] = None
     # List of samples for this problem
-    samples: List[Sample] = []
+    samples: List[Sample] = Field(default_factory=list)
+
+
+# Training format models
+
+
+class SFTSample(BaseModel):
+    """SFT training format with prompt and solution."""
+
+    prompt: str
+    solution: str
+
+
+class RLProblem(BaseModel):
+    """RL training format following kylie.json structure."""
+
+    env_name: str = "code"
+    scenario_config: ScenarioConfig

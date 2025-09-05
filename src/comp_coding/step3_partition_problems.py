@@ -1,113 +1,226 @@
 #!/usr/bin/env python3
 """
-Step 3: Partition filtered problems into 4 sets.
-Creates 4 balanced partitions of problems for parallel processing or evaluation.
+Step 3: Partition filtered problems and convert to training formats.
+Creates 4 balanced partitions and generates aggregated SFT/RL training splits.
 """
 
-from typing import List
+from typing import List, Dict, Any
 import json
 from pathlib import Path
 import argparse
 import numpy as np
+import random
 
 # Import shared models
-from models import Problem
+from comp_coding.models import (
+    Problem,
+    SFTSample,
+    RLProblem,
+    ScenarioConfig,
+    TestCase,
+)
+
+
+def problem_to_sft_samples(problem: Problem) -> List[SFTSample]:
+    """
+    Convert a Problem to SFT samples.
+    Uses the problem's prompt and each sample's solution.
+    """
+    sft_samples = []
+    for sample in problem.samples:
+        if sample.solution:
+            sft_example = SFTSample(
+                prompt=problem.scenario_config.prompt, solution=sample.solution
+            )
+            sft_samples.append(sft_example)
+    return sft_samples
+
+
+def problem_to_rl_format(problem: Problem) -> RLProblem:
+    """
+    Convert a Problem to RL format.
+    """
+    # Create ScenarioConfig with tests
+    scenario_config = ScenarioConfig(
+        prompt=problem.scenario_config.prompt, tests=problem.scenario_config.tests
+    )
+
+    # Create RLProblem
+    rl_problem = RLProblem(env_name="code", scenario_config=scenario_config)
+
+    return rl_problem
 
 
 def partition_problems(
     problems: List[Problem], num_partitions: int = 4, random_seed: int = 42
 ) -> List[List[Problem]]:
     """
-    Partition problems into num_partitions equal-sized sets using numpy permutation.
-    Always shuffles the problems before partitioning.
-
-    Args:
-        problems: List of Problem instances to partition
-        num_partitions: Number of partitions to create (default 4)
-        random_seed: Random seed for shuffling (default 42)
-
-    Returns:
-        List of partitions, each containing a subset of problems
+    Partition problems into equal-sized sets.
+    Always shuffles problems before partitioning using numpy permutation.
     """
-    total_problems = len(problems)
-    print(
-        f"\nPartitioning {total_problems} problems into {num_partitions} equal-sized sets..."
-    )
-
-    # Always set random seed for reproducibility
-    np.random.seed(random_seed)
+    print(f"\nPartitioning {len(problems)} problems into {num_partitions} equal-sized sets...")
     print(f"Using random seed: {random_seed}")
 
-    # Always shuffle using numpy permutation
-    permutation = np.random.permutation(total_problems)
-    problems_shuffled = [problems[i] for i in permutation]
-    print(f"Shuffled {total_problems} problems using numpy permutation")
+    # Shuffle problems using numpy permutation
+    np.random.seed(random_seed)
+    indices = np.random.permutation(len(problems))
+    problems_shuffled = [problems[i] for i in indices]
+    print(f"Shuffled {len(problems)} problems using numpy permutation")
 
-    # Calculate equal partition sizes
-    # Drop the last few problems if total is not divisible by num_partitions
-    problems_per_partition = total_problems // num_partitions
-    total_used = problems_per_partition * num_partitions
+    # Calculate partition size
+    partition_size = len(problems) // num_partitions
+    remainder = len(problems) % num_partitions
 
-    if total_used < total_problems:
-        print(
-            f"Note: Dropping last {total_problems - total_used} problems to ensure equal partitions"
-        )
-        problems_shuffled = problems_shuffled[:total_used]
-
-    # Create equal-sized partitions
     partitions = []
+    start = 0
+
     for i in range(num_partitions):
-        start_idx = i * problems_per_partition
-        end_idx = (i + 1) * problems_per_partition
-
-        partition = problems_shuffled[start_idx:end_idx]
+        # Add one extra problem to first 'remainder' partitions
+        current_size = partition_size + (1 if i < remainder else 0)
+        end = start + current_size
+        partition = problems_shuffled[start:end]
         partitions.append(partition)
-
-        print(
-            f"  Partition {i + 1}: {len(partition)} problems (indices {start_idx}-{end_idx - 1})"
-        )
+        print(f"  Partition {i + 1}: {len(partition)} problems (indices {start}-{end-1})")
+        start = end
 
     return partitions
 
 
-def report_partition_statistics(partitions: List[List[Problem]]) -> None:
-    """Report statistics about the partitions."""
-    print("\n=== Partition Statistics ===")
-
-    for i, partition in enumerate(partitions, 1):
-        total_samples = sum(len(p.samples) for p in partition)
-        total_tests = sum(len(p.scenario_config.tests) for p in partition)
-
-        # Dataset distribution in this partition
-        dataset_counts = {}
-        for p in partition:
-            if p.dataset:
-                dataset_counts[p.dataset] = dataset_counts.get(p.dataset, 0) + 1
-
-        print(f"\nPartition {i}:")
-        print(f"  Problems: {len(partition)}")
-        print(f"  Total samples: {total_samples}")
-        print(f"  Total test cases: {total_tests}")
-        print(
-            f"  Datasets: {', '.join(f'{d}:{c}' for d, c in sorted(dataset_counts.items()))}"
-        )
+def create_aggregated_training_splits(
+    partitions: List[List[Problem]],
+    output_dir: Path,
+    sft_ratios: List[float] = [0.75, 0.50, 0.25],
+    random_seed: int = 42,
+) -> List[Dict[str, Any]]:
+    """
+    Create aggregated SFT/RL training splits across partitions.
+    For a 25-75 split with 4 partitions: partition 1 for SFT, partitions 2-4 for RL.
+    """
+    # Set random seed for reproducibility
+    random.seed(random_seed)
+    np.random.seed(random_seed)
+    
+    num_partitions = len(partitions)
+    all_stats = []
+    
+    # Create splits with different ratios
+    for ratio in sft_ratios:
+        split_name = f"{int(ratio * 100)}_{int((1 - ratio) * 100)}"
+        print(f"\n  Creating aggregated {split_name} split...")
+        
+        # Calculate how many partitions for SFT vs RL
+        num_sft_partitions = int(num_partitions * ratio)
+        if num_sft_partitions == 0 and ratio > 0:
+            num_sft_partitions = 1  # At least 1 partition for SFT if ratio > 0
+        
+        # Aggregate problems from appropriate partitions
+        sft_problems = []
+        rl_problems = []
+        
+        for i in range(num_partitions):
+            if i < num_sft_partitions:
+                sft_problems.extend(partitions[i])
+            else:
+                rl_problems.extend(partitions[i])
+        
+        # Convert to training formats
+        sft_samples = []
+        for problem in sft_problems:
+            sft_samples.extend(problem_to_sft_samples(problem))
+        
+        rl_samples = []
+        for problem in rl_problems:
+            rl_samples.append(problem_to_rl_format(problem))
+        
+        # Save SFT samples
+        sft_path = output_dir / f"split_{split_name}_sft.jsonl"
+        with open(sft_path, "w") as f:
+            for sample in sft_samples:
+                f.write(json.dumps(sample.model_dump()) + "\n")
+        
+        # Save RL samples
+        rl_path = output_dir / f"split_{split_name}_rl.jsonl"
+        with open(rl_path, "w") as f:
+            for sample in rl_samples:
+                f.write(json.dumps(sample.model_dump()) + "\n")
+        
+        stats = {
+            "split_name": split_name,
+            "sft_partitions": list(range(1, num_sft_partitions + 1)),
+            "rl_partitions": list(range(num_sft_partitions + 1, num_partitions + 1)),
+            "sft_problems": len(sft_problems),
+            "rl_problems": len(rl_problems),
+            "sft_samples": len(sft_samples),
+            "rl_samples": len(rl_samples),
+            "sft_file": str(sft_path.name),
+            "rl_file": str(rl_path.name),
+        }
+        all_stats.append(stats)
+        
+        print(f"    SFT: Partitions {stats['sft_partitions']} -> {len(sft_problems)} problems, {len(sft_samples)} samples")
+        print(f"    RL:  Partitions {stats['rl_partitions']} -> {len(rl_problems)} problems, {len(rl_samples)} samples")
+    
+    # Create Luffy configuration (100% SFT AND 100% RL)
+    print(f"\n  Creating Luffy split (100% SFT AND 100% RL)...")
+    
+    # Use ALL partitions for both SFT and RL
+    all_problems = []
+    for partition in partitions:
+        all_problems.extend(partition)
+    
+    # Convert ALL problems to BOTH formats
+    sft_samples = []
+    rl_samples = []
+    
+    for problem in all_problems:
+        sft_samples.extend(problem_to_sft_samples(problem))
+        rl_samples.append(problem_to_rl_format(problem))
+    
+    # Save Luffy SFT samples
+    sft_path = output_dir / f"split_luffy_sft.jsonl"
+    with open(sft_path, "w") as f:
+        for sample in sft_samples:
+            f.write(json.dumps(sample.model_dump()) + "\n")
+    
+    # Save Luffy RL samples
+    rl_path = output_dir / f"split_luffy_rl.jsonl"
+    with open(rl_path, "w") as f:
+        for sample in rl_samples:
+            f.write(json.dumps(sample.model_dump()) + "\n")
+    
+    stats = {
+        "split_name": "luffy",
+        "configuration": "100% SFT AND 100% RL (with clipped off-policy IS)",
+        "sft_partitions": list(range(1, num_partitions + 1)),
+        "rl_partitions": list(range(1, num_partitions + 1)),
+        "sft_problems": len(all_problems),
+        "rl_problems": len(all_problems),
+        "sft_samples": len(sft_samples),
+        "rl_samples": len(rl_samples),
+        "sft_file": str(sft_path.name),
+        "rl_file": str(rl_path.name),
+    }
+    all_stats.append(stats)
+    
+    print(f"    SFT: All partitions -> {len(all_problems)} problems, {len(sft_samples)} samples")
+    print(f"    RL:  All partitions -> {len(all_problems)} problems (same problems for off-policy IS)")
+    
+    return all_stats
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Step 3: Partition filtered problems into 4 sets"
-    )
+    parser = argparse.ArgumentParser(description="Step 3: Partition and create training formats")
     parser.add_argument(
         "--input-file",
         type=str,
-        required=False,
-        help="Input file with filtered problems (default: auto-detect based on num-examples)",
+        default=None,
+        help="Input JSON file path (default: auto-detect based on num-examples)",
     )
     parser.add_argument(
         "--output-prefix",
         type=str,
-        required=False,
-        help="Output prefix for partition files (default: auto-detect based on num-examples)",
+        default=None,
+        help="Output file prefix (default: auto-detect based on num-examples)",
     )
     parser.add_argument(
         "--num-partitions",
@@ -143,6 +256,11 @@ def main():
         "--force-recreate",
         action="store_true",
         help="Force recreation even if output files exist",
+    )
+    parser.add_argument(
+        "--create-training-splits",
+        action="store_true",
+        help="Create aggregated SFT/RL training splits",
     )
 
     args = parser.parse_args()
@@ -182,7 +300,7 @@ def main():
         print("Use --force-recreate to overwrite.")
         return
 
-    print(f"Step 3: Partitioning problems into {args.num_partitions} sets")
+    print("Step 3: Partitioning problems and creating training formats")
     print(f"Loading problems from {input_path}")
 
     # Load filtered problems
@@ -205,23 +323,77 @@ def main():
             partition_data = [prob.model_dump() for prob in partition]
             json.dump(partition_data, f, indent=2)
 
-    # Report statistics
-    report_partition_statistics(partitions)
+    # Create training splits if requested
+    if args.create_training_splits:
+        print("\n" + "=" * 60)
+        print("Creating aggregated SFT/RL training splits...")
+        print("=" * 60)
+
+        # Create training directory
+        training_dir = output_dir / "training_splits"
+        training_dir.mkdir(exist_ok=True)
+
+        # Create aggregated splits
+        all_stats = create_aggregated_training_splits(
+            partitions,
+            training_dir,
+            sft_ratios=[0.75, 0.50, 0.25],
+            random_seed=args.random_seed,
+        )
+
+        # Save training statistics
+        training_stats_path = training_dir / "training_splits_stats.json"
+        with open(training_stats_path, "w") as f:
+            json.dump(all_stats, f, indent=2)
+        print(f"\nTraining statistics saved to: {training_stats_path}")
+
+    # Report partition statistics
+    print("\n" + "=" * 60)
+    print("Partition Statistics")
+    print("=" * 60)
+
+    for i, partition in enumerate(partitions, 1):
+        total_samples = sum(len(p.samples) for p in partition)
+        total_tests = sum(len(p.scenario_config.tests) for p in partition)
+
+        # Dataset distribution in this partition
+        dataset_counts = {}
+        for p in partition:
+            if p.dataset:
+                dataset_counts[p.dataset] = dataset_counts.get(p.dataset, 0) + 1
+
+        print(f"\nPartition {i}:")
+        print(f"  Problems: {len(partition)}")
+        print(f"  Total samples: {total_samples}")
+        print(f"  Total test cases: {total_tests}")
+        print(
+            f"  Datasets: {', '.join(f'{d}:{c}' for d, c in sorted(dataset_counts.items()))}"
+        )
 
     # Save partition metadata
-    metadata_path = output_dir / f"{output_prefix}_metadata.json"
     metadata = {
         "num_partitions": args.num_partitions,
         "total_problems": len(problems),
-        "total_problems_used": sum(len(p) for p in partitions),
-        "shuffled": True,  # Always shuffled
         "random_seed": args.random_seed,
-        "partition_sizes": [len(p) for p in partitions],
-        "partition_files": [
-            f"{output_prefix}_{i + 1}.json" for i in range(args.num_partitions)
-        ],
+        "partitions": [],
     }
 
+    for i, partition in enumerate(partitions, 1):
+        partition_info = {
+            "partition_id": i,
+            "num_problems": len(partition),
+            "num_samples": sum(len(p.samples) for p in partition),
+            "num_tests": sum(len(p.scenario_config.tests) for p in partition),
+            "datasets": {},
+        }
+        for p in partition:
+            if p.dataset:
+                partition_info["datasets"][p.dataset] = (
+                    partition_info["datasets"].get(p.dataset, 0) + 1
+                )
+        metadata["partitions"].append(partition_info)
+
+    metadata_path = output_dir / f"{output_prefix}_metadata.json"
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
     print(f"\nPartition metadata saved to: {metadata_path}")

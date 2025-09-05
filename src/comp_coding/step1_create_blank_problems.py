@@ -15,7 +15,7 @@ import sys
 import argparse
 
 # Import shared types
-from models import TestCase, ScenarioConfig, Problem
+from comp_coding.models import TestCase, ScenarioConfig, Problem
 
 # Increase the limit for integer string conversion to handle large numbers in APPS dataset
 sys.set_int_max_str_digits(100000)
@@ -69,10 +69,12 @@ def process_taco(benchmark: Dict[str, Any]) -> Tuple[Optional[str], List[TestCas
             for inp, out in zip(io_data["inputs"], io_data["outputs"]):
                 # Check if inp and out are lists and join them
                 if isinstance(inp, list):
-                    inp = "\n".join(inp)
+                    # Handle cases where inp might contain nested lists
+                    inp = "\n".join(str(x) for x in inp)
                 if isinstance(out, list):
-                    out = "\n".join(out)
-                tests.append(TestCase(stdin=inp, stdout=out))
+                    # Handle cases where out might contain nested lists
+                    out = "\n".join(str(x) for x in out)
+                tests.append(TestCase(stdin=str(inp), stdout=str(out)))
 
     return question, tests
 
@@ -89,10 +91,12 @@ def process_apps(benchmark: Dict[str, Any]) -> Tuple[Optional[str], List[TestCas
             for inp, out in zip(io_data["inputs"], io_data["outputs"]):
                 # Check if inp and out are lists and join them
                 if isinstance(inp, list):
-                    inp = "\n".join(inp)
+                    # Handle cases where inp might contain nested lists
+                    inp = "\n".join(str(x) for x in inp)
                 if isinstance(out, list):
-                    out = "\n".join(out)
-                tests.append(TestCase(stdin=inp, stdout=out))
+                    # Handle cases where out might contain nested lists
+                    out = "\n".join(str(x) for x in out)
+                tests.append(TestCase(stdin=str(inp), stdout=str(out)))
 
     return question, tests
 
@@ -162,6 +166,42 @@ def process_ocr2_item_for_mapping(
     return None
 
 
+def verify_ocr2_iteration_consistency(n_samples: int = 10) -> bool:
+    """Verify that OCR2 dataset iteration order is consistent."""
+    print(f"Verifying OCR2 iteration consistency with {n_samples} samples...")
+
+    ocr2_dataset = load_dataset("nvidia/OpenCodeReasoning-2")
+
+    # First pass
+    first_pass_ids = []
+    for lang in ["python"]:
+        ocr2_ds = ocr2_dataset[lang]
+        for i, item in enumerate(itertools.islice(ocr2_ds, n_samples)):
+            first_pass_ids.append(item.get("question_id", ""))
+
+    # Second pass
+    second_pass_ids = []
+    for lang in ["python"]:
+        ocr2_ds = ocr2_dataset[lang]
+        for i, item in enumerate(itertools.islice(ocr2_ds, n_samples)):
+            second_pass_ids.append(item.get("question_id", ""))
+
+    # Compare
+    all_match = True
+    for i in range(min(len(first_pass_ids), len(second_pass_ids))):
+        if first_pass_ids[i] != second_pass_ids[i]:
+            print(f"  ❌ Mismatch at index {i}")
+            all_match = False
+            break
+
+    if all_match:
+        print(f"  ✅ OCR2 iteration order is consistent (tested {n_samples} samples)")
+    else:
+        print("  ❌ OCR2 iteration order is NOT consistent!")
+
+    return all_match
+
+
 def build_question_id_to_problem_mapping(
     problems_path: Path = Path("problems_blank.json"),
     mapping_path: Path = Path("question_id_to_index.json"),
@@ -193,7 +233,7 @@ def build_question_id_to_problem_mapping(
         # Load problems
         with open(problems_path, "r") as f:
             problems_data = json.load(f)
-            problems = [Problem(**prob_data) for prob_data in problems_data]
+            problems = [Problem.model_validate(prob_data) for prob_data in problems_data]
 
         # Load mapping
         with open(mapping_path, "r") as f:
@@ -203,16 +243,22 @@ def build_question_id_to_problem_mapping(
 
         return question_id_to_index, problems
 
+    # Test OCR2 iteration consistency before proceeding
+    if not verify_ocr2_iteration_consistency():
+        raise RuntimeError(
+            "OCR2 iteration order is not consistent! Cannot safely cache mapping."
+        )
+
     print(f"Building question_id to Problem mapping using {n_workers} workers...")
 
-    # First, collect all unique question_ids to identify unique problems
+    # First pass: collect all unique question_ids to identify unique problems
     question_id_to_problem_key: Dict[str, Tuple[str, str, int]] = {}
     problem_key_to_question_ids: Dict[Tuple[str, str, int], List[str]] = {}
 
     ocr2_dataset = load_dataset("nvidia/OpenCodeReasoning-2")
 
     # Process items using streaming with batches
-    print("Processing OCR2 items in batches...")
+    print("First pass: Processing OCR2 items to build mapping...")
 
     batch_size = 10000
     total_processed = 0
@@ -270,8 +316,10 @@ def build_question_id_to_problem_mapping(
                     if num_examples and total_processed >= num_examples:
                         break
 
-    # Create Problem instances
-    print(f"\nCreating {len(problem_key_to_question_ids)} unique problems...")
+    # Second pass: Create Problem instances using the mapping
+    print(
+        f"\nSecond pass: Creating {len(problem_key_to_question_ids)} unique problems..."
+    )
     problems: List[Problem] = []
     question_id_to_index: Dict[str, int] = {}
 
@@ -290,13 +338,16 @@ def build_question_id_to_problem_mapping(
         # Create ScenarioConfig
         scenario_config = ScenarioConfig(prompt=question, tests=tests if tests else [])
 
-        # Create Problem with question_ids but no samples
+        # Since we verified each problem has exactly 1 question_id, take the first
+        question_id = question_ids[0] if question_ids else None
+
+        # Create Problem with single question_id but no samples
         problem = Problem(
             scenario_config=scenario_config,
             dataset=ds_name,
             split=ds_split,
             index=ds_index,
-            question_ids=question_ids,  # Store all question_ids for this problem
+            question_id=question_id,  # Store the single question_id for this problem
             samples=[],  # No samples yet
         )
 
@@ -304,9 +355,9 @@ def build_question_id_to_problem_mapping(
         problem_index = len(problems)
         problems.append(problem)
 
-        # Map all question_ids to this problem's index
-        for qid in question_ids:
-            question_id_to_index[qid] = problem_index
+        # Map the question_id to this problem's index
+        if question_id:
+            question_id_to_index[question_id] = problem_index
 
     # Save problems to separate file
     print(f"\nSaving {len(problems)} blank problems to {problems_path}")
@@ -314,9 +365,10 @@ def build_question_id_to_problem_mapping(
     with open(problems_path, "w") as f:
         problems_data = [prob.model_dump() for prob in problems]
         json.dump(problems_data, f, indent=2)
-
-    # Save mapping to separate file
+    
+    # Save the question_id_to_index mapping (this is what step2 needs)
     print(f"Saving question_id to index mapping to {mapping_path}")
+    mapping_path.parent.mkdir(parents=True, exist_ok=True)
     with open(mapping_path, "w") as f:
         json.dump(question_id_to_index, f, indent=2)
 
