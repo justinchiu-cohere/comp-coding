@@ -233,7 +233,9 @@ def build_question_id_to_problem_mapping(
         # Load problems
         with open(problems_path, "r") as f:
             problems_data = json.load(f)
-            problems = [Problem.model_validate(prob_data) for prob_data in problems_data]
+            problems = [
+                Problem.model_validate(prob_data) for prob_data in problems_data
+            ]
 
         # Load mapping
         with open(mapping_path, "r") as f:
@@ -365,7 +367,7 @@ def build_question_id_to_problem_mapping(
     with open(problems_path, "w") as f:
         problems_data = [prob.model_dump() for prob in problems]
         json.dump(problems_data, f, indent=2)
-    
+
     # Save the question_id_to_index mapping (this is what step2 needs)
     print(f"Saving question_id to index mapping to {mapping_path}")
     mapping_path.parent.mkdir(parents=True, exist_ok=True)

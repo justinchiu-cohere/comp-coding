@@ -18,7 +18,6 @@ from comp_coding.models import (
     RLProblem,
     RLProblemWithCompletions,
     ScenarioConfig,
-    TestCase,
 )
 
 
@@ -33,8 +32,7 @@ def problem_to_sft_samples(problem: Problem) -> List[SFTSample]:
         completion = sample.r1_generation or sample.solution
         if completion:
             sft_example = SFTSample(
-                prompt=problem.scenario_config.prompt, 
-                completion=completion
+                prompt=problem.scenario_config.prompt, completion=completion
             )
             sft_samples.append(sft_example)
     return sft_samples
@@ -62,7 +60,9 @@ def partition_problems(
     Partition problems into equal-sized sets.
     Always shuffles problems before partitioning using numpy permutation.
     """
-    print(f"\nPartitioning {len(problems)} problems into {num_partitions} equal-sized sets...")
+    print(
+        f"\nPartitioning {len(problems)} problems into {num_partitions} equal-sized sets..."
+    )
     print(f"Using random seed: {random_seed}")
 
     # Shuffle problems using numpy permutation
@@ -84,7 +84,9 @@ def partition_problems(
         end = start + current_size
         partition = problems_shuffled[start:end]
         partitions.append(partition)
-        print(f"  Partition {i + 1}: {len(partition)} problems (indices {start}-{end-1})")
+        print(
+            f"  Partition {i + 1}: {len(partition)} problems (indices {start}-{end - 1})"
+        )
         start = end
 
     return partitions
@@ -103,101 +105,117 @@ def create_aggregated_training_splits(
     # Set random seed for reproducibility
     random.seed(random_seed)
     np.random.seed(random_seed)
-    
+
     num_partitions = len(partitions)
     all_stats = []
-    
+
     # Create splits with different ratios
     for ratio in sft_ratios:
         split_name = f"{int(ratio * 100)}_{int((1 - ratio) * 100)}"
         print(f"\n  Creating aggregated {split_name} split...")
-        
+
         # Calculate how many partitions for SFT vs RL
         num_sft_partitions = int(num_partitions * ratio)
         if num_sft_partitions == 0 and ratio > 0:
             num_sft_partitions = 1  # At least 1 partition for SFT if ratio > 0
-        
+
         # Aggregate problems from appropriate partitions
         sft_problems = []
         rl_problems = []
-        
+
         for i in range(num_partitions):
             if i < num_sft_partitions:
                 sft_problems.extend(partitions[i])
             else:
                 rl_problems.extend(partitions[i])
-        
+
         # Convert to training formats
         sft_samples = []
         for problem in sft_problems:
             sft_samples.extend(problem_to_sft_samples(problem))
-        
+
         rl_samples = []
         for problem in rl_problems:
             rl_samples.append(problem_to_rl_format(problem))
-        
-        # Save SFT samples
-        sft_path = output_dir / f"split_{split_name}_sft.jsonl"
-        with open(sft_path, "w") as f:
-            for sample in sft_samples:
-                f.write(json.dumps(sample.model_dump()) + "\n")
-        
-        # Save RL samples
-        rl_path = output_dir / f"split_{split_name}_rl.jsonl"
-        with open(rl_path, "w") as f:
-            for sample in rl_samples:
-                f.write(json.dumps(sample.model_dump()) + "\n")
-        
+
+        # Save SFT samples (only if there are any)
+        if sft_samples:
+            sft_path = output_dir / f"split_{split_name}_sft.jsonl"
+            with open(sft_path, "w") as f:
+                for sample in sft_samples:
+                    f.write(json.dumps(sample.model_dump()) + "\n")
+        else:
+            sft_path = None
+
+        # Save RL samples (only if there are any)
+        if rl_samples:
+            rl_path = output_dir / f"split_{split_name}_rl.jsonl"
+            with open(rl_path, "w") as f:
+                for sample in rl_samples:
+                    f.write(json.dumps(sample.model_dump()) + "\n")
+        else:
+            rl_path = None
+
         stats = {
             "split_name": split_name,
-            "sft_partitions": list(range(1, num_sft_partitions + 1)),
-            "rl_partitions": list(range(num_sft_partitions + 1, num_partitions + 1)),
+            "sft_partitions": list(range(1, num_sft_partitions + 1))
+            if num_sft_partitions > 0
+            else [],
+            "rl_partitions": list(range(num_sft_partitions + 1, num_partitions + 1))
+            if num_sft_partitions < num_partitions
+            else [],
             "sft_problems": len(sft_problems),
             "rl_problems": len(rl_problems),
             "sft_samples": len(sft_samples),
             "rl_samples": len(rl_samples),
-            "sft_file": str(sft_path.name),
-            "rl_file": str(rl_path.name),
+            "sft_file": str(sft_path.name) if sft_path else None,
+            "rl_file": str(rl_path.name) if rl_path else None,
         }
         all_stats.append(stats)
-        
-        print(f"    SFT: Partitions {stats['sft_partitions']} -> {len(sft_problems)} problems, {len(sft_samples)} samples")
-        print(f"    RL:  Partitions {stats['rl_partitions']} -> {len(rl_problems)} problems, {len(rl_samples)} samples")
-    
+
+        print(
+            f"    SFT: Partitions {stats['sft_partitions']} -> {len(sft_problems)} problems, {len(sft_samples)} samples"
+        )
+        print(
+            f"    RL:  Partitions {stats['rl_partitions']} -> {len(rl_problems)} problems, {len(rl_samples)} samples"
+        )
+
     # Create Luffy configuration (RLProblemWithCompletions only)
-    print(f"\n  Creating Luffy split (RLProblemWithCompletions)...")
-    
+    print("\n  Creating Luffy split (RLProblemWithCompletions)...")
+
     # Use ALL partitions
     all_problems = []
     for partition in partitions:
         all_problems.extend(partition)
-    
+
     # Convert ALL problems to RLProblemWithCompletions format
     rl_samples_with_completions = []
-    
+
     for problem in all_problems:
         # RL format with completions for Luffy (using r1_generation)
-        completions = [sample.r1_generation or sample.solution 
-                      for sample in problem.samples 
-                      if sample.r1_generation or sample.solution]
+        completions = [
+            sample.r1_generation or sample.solution
+            for sample in problem.samples
+            if sample.r1_generation or sample.solution
+        ]
         if completions:  # Only include problems that have at least one completion
             scenario_config = ScenarioConfig(
-                prompt=problem.scenario_config.prompt, 
-                tests=problem.scenario_config.tests
+                prompt=problem.scenario_config.prompt,
+                tests=problem.scenario_config.tests,
             )
             rl_problem = RLProblemWithCompletions(
                 env_name="code",
                 scenario_config=scenario_config,
-                completions=completions
+                completions=completions,
             )
             rl_samples_with_completions.append(rl_problem)
-    
+
     # Save Luffy RL samples with completions (no separate SFT file)
-    luffy_path = output_dir / f"split_luffy.jsonl"
+    luffy_path = output_dir / "split_luffy.jsonl"
     with open(luffy_path, "w") as f:
         for sample in rl_samples_with_completions:
             f.write(json.dumps(sample.model_dump()) + "\n")
-    
+
     stats = {
         "split_name": "luffy",
         "configuration": "RLProblemWithCompletions for off-policy IS",
@@ -206,14 +224,18 @@ def create_aggregated_training_splits(
         "file": str(luffy_path.name),
     }
     all_stats.append(stats)
-    
-    print(f"    All partitions -> {len(rl_samples_with_completions)} problems with completions")
-    
+
+    print(
+        f"    All partitions -> {len(rl_samples_with_completions)} problems with completions"
+    )
+
     return all_stats
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Step 3: Partition and create training formats")
+    parser = argparse.ArgumentParser(
+        description="Step 3: Partition and create training formats"
+    )
     parser.add_argument(
         "--input-file",
         type=str,
@@ -337,11 +359,11 @@ def main():
         training_dir = output_dir / "training_splits"
         training_dir.mkdir(exist_ok=True)
 
-        # Create aggregated splits
+        # Create aggregated splits (including 100_0 and 0_100)
         all_stats = create_aggregated_training_splits(
             partitions,
             training_dir,
-            sft_ratios=[0.75, 0.50, 0.25],
+            sft_ratios=[1.0, 0.75, 0.50, 0.25, 0.0],
             random_seed=args.random_seed,
         )
 
