@@ -25,13 +25,16 @@ from comp_coding.models import (
 def problem_to_sft_samples(problem: Problem) -> List[SFTSample]:
     """
     Convert a Problem to SFT samples.
-    Uses the problem's prompt and each sample's solution.
+    Uses the problem's prompt and each sample's full r1_generation as completion.
     """
     sft_samples = []
     for sample in problem.samples:
-        if sample.solution:
+        # Use r1_generation as the full completion if available, otherwise fall back to solution
+        completion = sample.r1_generation or sample.solution
+        if completion:
             sft_example = SFTSample(
-                prompt=problem.scenario_config.prompt, solution=sample.solution
+                prompt=problem.scenario_config.prompt, 
+                completion=completion
             )
             sft_samples.append(sft_example)
     return sft_samples
@@ -161,24 +164,22 @@ def create_aggregated_training_splits(
         print(f"    SFT: Partitions {stats['sft_partitions']} -> {len(sft_problems)} problems, {len(sft_samples)} samples")
         print(f"    RL:  Partitions {stats['rl_partitions']} -> {len(rl_problems)} problems, {len(rl_samples)} samples")
     
-    # Create Luffy configuration (100% SFT AND 100% RL with completions)
-    print(f"\n  Creating Luffy split (100% SFT AND 100% RL with completions)...")
+    # Create Luffy configuration (RLProblemWithCompletions only)
+    print(f"\n  Creating Luffy split (RLProblemWithCompletions)...")
     
-    # Use ALL partitions for both SFT and RL
+    # Use ALL partitions
     all_problems = []
     for partition in partitions:
         all_problems.extend(partition)
     
-    # Convert ALL problems to BOTH formats
-    sft_samples = []
+    # Convert ALL problems to RLProblemWithCompletions format
     rl_samples_with_completions = []
     
     for problem in all_problems:
-        # SFT samples as before
-        sft_samples.extend(problem_to_sft_samples(problem))
-        
-        # RL format with completions for Luffy
-        completions = [sample.solution for sample in problem.samples if sample.solution]
+        # RL format with completions for Luffy (using r1_generation)
+        completions = [sample.r1_generation or sample.solution 
+                      for sample in problem.samples 
+                      if sample.r1_generation or sample.solution]
         if completions:  # Only include problems that have at least one completion
             scenario_config = ScenarioConfig(
                 prompt=problem.scenario_config.prompt, 
@@ -191,34 +192,22 @@ def create_aggregated_training_splits(
             )
             rl_samples_with_completions.append(rl_problem)
     
-    # Save Luffy SFT samples
-    sft_path = output_dir / f"split_luffy_sft.jsonl"
-    with open(sft_path, "w") as f:
-        for sample in sft_samples:
-            f.write(json.dumps(sample.model_dump()) + "\n")
-    
-    # Save Luffy RL samples with completions
-    rl_path = output_dir / f"split_luffy_rl.jsonl"
-    with open(rl_path, "w") as f:
+    # Save Luffy RL samples with completions (no separate SFT file)
+    luffy_path = output_dir / f"split_luffy.jsonl"
+    with open(luffy_path, "w") as f:
         for sample in rl_samples_with_completions:
             f.write(json.dumps(sample.model_dump()) + "\n")
     
     stats = {
         "split_name": "luffy",
-        "configuration": "100% SFT AND 100% RL with completions (for off-policy IS)",
-        "sft_partitions": list(range(1, num_partitions + 1)),
-        "rl_partitions": list(range(1, num_partitions + 1)),
-        "sft_problems": len(all_problems),
-        "rl_problems": len(rl_samples_with_completions),
-        "sft_samples": len(sft_samples),
-        "rl_samples": len(rl_samples_with_completions),
-        "sft_file": str(sft_path.name),
-        "rl_file": str(rl_path.name),
+        "configuration": "RLProblemWithCompletions for off-policy IS",
+        "partitions": list(range(1, num_partitions + 1)),
+        "problems": len(rl_samples_with_completions),
+        "file": str(luffy_path.name),
     }
     all_stats.append(stats)
     
-    print(f"    SFT: All partitions -> {len(all_problems)} problems, {len(sft_samples)} samples")
-    print(f"    RL:  All partitions -> {len(rl_samples_with_completions)} problems with completions")
+    print(f"    All partitions -> {len(rl_samples_with_completions)} problems with completions")
     
     return all_stats
 

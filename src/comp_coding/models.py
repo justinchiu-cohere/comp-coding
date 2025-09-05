@@ -51,10 +51,10 @@ class Problem(BaseModel):
 
 
 class SFTSample(BaseModel):
-    """SFT training format with prompt and solution."""
+    """SFT training format with prompt and completion."""
 
     prompt: str
-    solution: str
+    completion: str  # Full completion/solution text
 
 
 class RLProblem(BaseModel):
