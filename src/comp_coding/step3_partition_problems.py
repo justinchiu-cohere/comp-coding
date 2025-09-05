@@ -38,13 +38,16 @@ def problem_to_sft_samples(problem: Problem) -> List[SFTSample]:
     return sft_samples
 
 
-def problem_to_rl_format(problem: Problem) -> RLProblem:
+def problem_to_rl_format(problem: Problem, max_tests: int = 16) -> RLProblem:
     """
-    Convert a Problem to RL format.
+    Convert a Problem to RL format with optional test limit.
     """
-    # Create ScenarioConfig with tests
+    # Limit tests to max_tests
+    tests = problem.scenario_config.tests[:max_tests]
+    
+    # Create ScenarioConfig with limited tests
     scenario_config = ScenarioConfig(
-        prompt=problem.scenario_config.prompt, tests=problem.scenario_config.tests
+        prompt=problem.scenario_config.prompt, tests=tests
     )
 
     # Create RLProblem
@@ -199,9 +202,11 @@ def create_aggregated_training_splits(
             if sample.r1_generation or sample.solution
         ]
         if completions:  # Only include problems that have at least one completion
+            # Limit tests to 16
+            tests = problem.scenario_config.tests[:16]
             scenario_config = ScenarioConfig(
                 prompt=problem.scenario_config.prompt,
-                tests=problem.scenario_config.tests,
+                tests=tests,
             )
             rl_problem = RLProblemWithCompletions(
                 env_name="code",
